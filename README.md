@@ -69,12 +69,17 @@ Internet
 
 ### Screenshots
 
-The following screenshots will be added as the project progresses:
+**Wazuh Dashboard Overview** — active agent status and 24-hour alert severity breakdown
+![Dashboard Overview](screenshots/dashboard-overview.png)
 
-- `screenshots/dashboard-overview.png` — Wazuh dashboard summary
-- `screenshots/alerts-evolution.png` — Alert volume during brute-force simulation
-- `screenshots/top-tactics.png` — MITRE ATT&CK tactics visualization
-- `screenshots/event-detail.png` — Event-level investigation and rule details
+**MITRE ATT&CK — Alerts Evolution & Top Tactics**
+![MITRE ATT&CK Overview](screenshots/mitre-attack-overview.png)
+
+**Agents Overview** — both Linux and Windows endpoints reporting Active
+![Agents Overview](screenshots/agents-overview.png)
+
+**Event-Level Detail** — 1,023 correlated hits with Wazuh rule IDs mapped to MITRE ATT&CK
+![Event Detail](screenshots/event-detail.png)
 
 ---
 
@@ -143,7 +148,9 @@ The lab was deliberately built across DigitalOcean and AWS to practice adapting 
 - Confirmed the alert was searchable in the Events dashboard, filtered to `agent.name: windows-target`
 - Noted that newly forwarded events can take several minutes to become searchable in the Wazuh dashboard — worth budgeting for when validating live detections
 
-**Screenshot:** `screenshots/windows-logon-failure.png` — Wazuh Events table showing rule 60122 for the Windows target
+**Screenshot**
+
+![Windows Logon Failure Detection](screenshots/windows-logon-failure.png)
 
 **Root Cause**
 
