@@ -38,7 +38,7 @@ The environment intentionally spans multiple cloud providers and operating syste
 - **Operating Systems:** Ubuntu 24.04, Windows Server 2022
 - **Log Sources:** Syslog, PAM authentication logs, Windows Event Logs
 - **Frameworks:** MITRE ATT&CK
-- **Tools:** SSH, auditpol, Wazuh Agent, Wazuh Dashboard
+- **Tools:** SSH, PowerShell (`Get-WinEvent`, `Restart-Service`), auditpol, Wazuh Agent, Wazuh Dashboard
 
 ---
 
@@ -117,25 +117,43 @@ The lab was deliberately built across DigitalOcean and AWS to practice adapting 
 
 ---
 
-### Windows Failed Logon Detection (In Progress)
+### Windows Failed Logon Detection
 
-**MITRE ATT&CK:** T1110 – Brute Force
+**MITRE ATT&CK:** [T1110.001 – Password Guessing](https://attack.mitre.org/techniques/T1110/001/) — detected via Wazuh rule 60122, "Logon Failure"
+
+> **Note on MITRE mapping:** Wazuh's own rule metadata maps rule 60122 to T1531 (Account Access Removal), which is MITRE's technique for deleting or disabling accounts — not a failed logon attempt. That mapping doesn't match the observed behavior, so for accurate reporting this section uses T1110.001 (Password Guessing) instead, which correctly reflects the simulated credential-guessing attack. Worth flagging as a quirk in Wazuh's default ruleset rather than an error in this investigation.
 
 > **Note on naming:** the Windows endpoint is referred to as "Windows Target" in the architecture table above, and appears as `windows-target` (its registered Wazuh agent name) in dashboard screenshots and event data throughout this README. Same machine, two labels.
 
-**Current Status: Under active investigation**
+**Status: Resolved**
 
-- Enabled Windows audit logging for logon success/failure (`auditpol`)
-- Simulated failed authentication attempts locally on the Windows target
-- Filtered the Wazuh Events dashboard to `agent.name: windows-target` — only 3 total events returned, none corresponding to a failed-logon (Event ID 4625) alert; events seen so far are agent-connectivity notices, not authentication failures
-- **Root cause hypothesis:** the Windows agent's `ossec.conf` may be missing the Security eventchannel `<localfile>` block required to forward Windows Security log events to the manager
+**Investigation Process**
 
-**Next Steps**
+1. Enabled Windows audit logging for logon success/failure (`auditpol /set /subcategory:"Logon" /success:enable /failure:enable`)
+2. Initial testing showed no failed-logon alerts reaching Wazuh, despite the agent reporting Active
+3. Reviewed the Windows agent's `ossec.conf` directly and confirmed the Security eventchannel `<localfile>` block was already present and correctly configured — ruling out a missing-config explanation
+4. Queried the Windows Security log directly via PowerShell (`Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4625}`) and confirmed Event ID 4625 was generating locally — ruling out an audit-policy failure
+5. With configuration and local log generation both confirmed working, restarted the Wazuh agent service (`Restart-Service -Name WazuhSvc`) to force it to pick up log forwarding
+6. Re-ran a failed-logon simulation (`runas /user:Administrator cmd` with an incorrect password) and re-checked the Wazuh dashboard
 
-- Restart the Wazuh agent service (`WazuhSvc`) and re-test
-- Inspect and, if needed, correct the Security eventchannel configuration in `ossec.conf`
-- Confirm Event ID 4625 is generated locally on the Windows target
-- Re-run the simulated attack and confirm the alert reaches the Wazuh dashboard
+**Result**
+
+- Wazuh rule **60122 ("Logon Failure")** correctly fired for the simulated failed Windows authentication
+- Correctly re-mapped from Wazuh's default T1531 metadata to MITRE ATT&CK **T1110.001 (Password Guessing)**, which accurately reflects the attack behavior
+- Confirmed the alert was searchable in the Events dashboard, filtered to `agent.name: windows-target`
+- Noted that newly forwarded events can take several minutes to become searchable in the Wazuh dashboard — worth budgeting for when validating live detections
+
+**Screenshot:** `screenshots/windows-logon-failure.png` — Wazuh Events table showing rule 60122 for the Windows target
+
+**Root Cause**
+
+The Windows agent's configuration and local audit logging were both correct from the start. The actual issue was that the **Wazuh agent service needed to be restarted** to begin actively forwarding Security channel events to the manager — a live config or policy change alone wasn't enough to trigger forwarding.
+
+**Further Observation (Open Item)**
+
+- A second test using a nonexistent username (`runas /user:fakeuser cmd`) also generated a local Event ID 4625, but did not produce a matching Wazuh alert in the same way as the wrong-password test
+- This suggests Wazuh's default ruleset may distinguish between logon-failure sub-types (e.g. bad password vs. no such user), and full coverage of both cases may require a custom detection rule
+- Flagged as a next step under Roadmap
 
 ---
 
@@ -160,18 +178,20 @@ The lab was deliberately built across DigitalOcean and AWS to practice adapting 
 - VM creation blocked by regional quota restrictions in multiple regions
 - Re-architected the environment using AWS EC2 for the Windows endpoint
 
-### Windows Event Log Collection Issue
+### Windows Event Log Collection Issue (Resolved)
 
-**Symptoms:** Windows Security logs (failed logon events) are not appearing in the Wazuh dashboard, despite the agent showing as Active.
+**Symptoms:** Windows Security logs (failed logon events) were not appearing in the Wazuh dashboard, despite the agent showing as Active and `ossec.conf` appearing correctly configured.
 
-**Troubleshooting steps taken so far:**
+**Troubleshooting steps taken:**
 
-- Confirmed the Windows agent is installed and reporting Active status
+- Confirmed the Windows agent was installed and reporting Active status
 - Enabled audit logging for logon success/failure via `auditpol`
-- Filtered Wazuh events by agent name to isolate Windows-specific activity
-- Identified that only non-authentication events (agent connectivity) are currently reaching the manager
+- Reviewed `ossec.conf` directly and confirmed the Security eventchannel block was already present — ruled out a config gap
+- Queried the Windows Security log locally via PowerShell and confirmed Event ID 4625 was generating correctly — ruled out an audit policy issue
+- Restarted the Wazuh agent service to force it to resume active log forwarding
+- Re-tested with a simulated failed logon and confirmed the alert reached the Wazuh dashboard (rule 60122, "Logon Failure")
 
-**Status:** Actively debugging — likely a missing or misconfigured Security eventchannel entry in `ossec.conf`. This is documented here deliberately, as working through infrastructure and log-collection gaps like this is a core part of real SOC/detection engineering work.
+**Root cause:** The Wazuh agent service required a manual restart to resume forwarding Security channel events — configuration and local logging were both already correct. This is documented here deliberately, as working through infrastructure and log-collection gaps like this is a core part of real SOC/detection engineering work.
 
 ---
 
@@ -214,14 +234,14 @@ The objective was to verify that the system could:
 4. Classify the activity correctly
 5. Map the alert to the appropriate MITRE ATT&CK technique
 
-The lab successfully detected the simulated brute-force activity on Linux and generated alerts mapped to MITRE ATT&CK T1110.001 — the same technique real-world defenders use to classify brute-force login attempts. The Windows side of the lab is still being debugged, and that troubleshooting process is documented above as part of the project.
+The lab successfully detected the simulated brute-force activity on both endpoints — SSH login failures on Linux and failed logon attempts on Windows — with both detections aligned to MITRE ATT&CK T1110.001 (Password Guessing). Getting the Windows detection working required real troubleshooting: confirming the configuration was correct, confirming Windows itself was logging the events, and ultimately discovering that the monitoring agent needed a service restart to resume forwarding data — the kind of practical debugging real SOC analysts do regularly.
 
 ---
 
 ## Roadmap
 
-- [ ] Complete and tune Windows failed-logon detection
-- [ ] Create a custom Wazuh detection rule (e.g., threshold-based brute-force correlation)
+- [x] Complete and tune Windows failed-logon detection
+- [ ] Create a custom Wazuh detection rule (e.g., threshold-based brute-force correlation, and coverage for nonexistent-username logon failures)
 - [ ] Implement automated response to block IPs after repeated failed SSH logins
 - [ ] Add memory forensics with Volatility
 - [ ] Build a SOC investigation playbook for the brute-force scenario
@@ -270,4 +290,3 @@ Aspiring SOC Analyst / Blue Team Analyst with a focus on:
 ## License
 
 This project is for educational and portfolio purposes and is intended to demonstrate practical SOC and detection engineering skills in a controlled lab environment.
-
